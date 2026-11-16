@@ -9,7 +9,6 @@
 - Text channels should support emoji responses.
 - Server should use mongodb as database.
 - Server app should be able to deploy with simple docker compose file.
-
-
-
+- Server app should be written in rust.
+- Client apps should be written in rust.
 
