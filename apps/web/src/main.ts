@@ -319,7 +319,9 @@ async function joinVoice(channel: Channel): Promise<void> {
     voicePeer = peer;
     voiceChannelId = channel.id;
     voiceMuted = false;
-    voiceMakingOffer = false;
+    // addTrack() queues negotiationneeded. Hold the offer lock until the initial
+    // join offer is sent so that queued callback cannot start a second offer.
+    voiceMakingOffer = true;
     for (const track of stream.getTracks()) peer.addTrack(track, stream);
 
     peer.onicecandidate = (event) => {
@@ -357,6 +359,8 @@ async function joinVoice(channel: Channel): Promise<void> {
   } catch (err) {
     disconnectVoice();
     toast(errorMessage(err), true);
+  } finally {
+    voiceMakingOffer = false;
   }
 }
 

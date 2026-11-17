@@ -302,12 +302,13 @@ fn handle_command(
             response,
         } => {
             let result = (|| -> Result<(), String> {
-                let candidate = parse_ice_candidate(&candidate)?;
-                let client = clients
-                    .iter_mut()
-                    .find(|client| client.id == participant_id)
-                    .ok_or("participant not found")?;
-                client.rtc.add_remote_candidate(candidate);
+                if let Some(candidate) = parse_ice_candidate(&candidate)? {
+                    let client = clients
+                        .iter_mut()
+                        .find(|client| client.id == participant_id)
+                        .ok_or("participant not found")?;
+                    client.rtc.add_remote_candidate(candidate);
+                }
                 Ok(())
             })();
             let _ = response.send(result);
@@ -322,7 +323,7 @@ fn handle_command(
     }
 }
 
-fn parse_ice_candidate(value: &Value) -> Result<Candidate, String> {
+fn parse_ice_candidate(value: &Value) -> Result<Option<Candidate>, String> {
     let raw = match value {
         Value::String(raw) => raw.clone(),
         Value::Object(map) => {
@@ -337,11 +338,23 @@ fn parse_ice_candidate(value: &Value) -> Result<Candidate, String> {
         _ => return Err("unsupported ICE candidate shape".to_string()),
     };
 
-    let candidate = raw
-        .strip_prefix("candidate:")
-        .map(str::trim)
-        .unwrap_or(raw.as_str());
-    Candidate::from_sdp_string(candidate).map_err(|e| e.to_string())
+    // Browsers send the candidate value from `RTCIceCandidate.toJSON()`, which
+    // omits the `candidate:` SDP attribute prefix that str0m expects.
+    let raw = raw.trim();
+    if raw.is_empty() {
+        // End-of-candidates signal: str0m has no remote candidate for this case.
+        return Ok(None);
+    }
+    let raw = raw.strip_prefix("a=").unwrap_or(raw).trim();
+    let sdp = if raw.starts_with("candidate:") {
+        raw.to_string()
+    } else {
+        format!("candidate:{raw}")
+    };
+
+    Candidate::from_sdp_string(&sdp)
+        .map(Some)
+        .map_err(|e| e.to_string())
 }
 
 fn create_client(
@@ -819,4 +832,26 @@ enum Propagated {
         req: KeyframeRequest,
         mid: Mid,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_browser_candidate_without_sdp_prefix() {
+        let value = serde_json::json!({
+            "candidate": "2679991984 1 tcp 1518285567 fd92:5902:196f:81ff:6e3f:df83:6933:3139 9 typ host tcptype active generation 0 ufrag 6a/J network-id 6 network-cost 50",
+            "sdpMid": "0",
+            "sdpMLineIndex": 0,
+        });
+
+        assert!(parse_ice_candidate(&value).unwrap().is_some());
+    }
+
+    #[test]
+    fn accepts_empty_candidate_as_end_of_candidates() {
+        let value = serde_json::json!({ "candidate": "" });
+        assert!(parse_ice_candidate(&value).unwrap().is_none());
+    }
 }
