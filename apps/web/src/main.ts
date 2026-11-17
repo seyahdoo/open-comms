@@ -287,7 +287,7 @@ function updateVoiceUi(): void {
   if (inVoice) {
     setVoiceStatus(voiceConnectionLabel());
   } else if (selectedVoice) {
-    setVoiceStatus('Ready to join');
+    setVoiceStatus(window.isSecureContext ? 'Ready to join' : 'Voice needs HTTPS or localhost');
   }
 }
 
@@ -302,11 +302,18 @@ function setVoiceStatus(text: string): void {
   qs<HTMLSpanElement>('#voiceStatus').textContent = text;
 }
 
+function requireSecureContext(feature: string): boolean {
+  if (window.isSecureContext) return true;
+  toast(`${feature} requires HTTPS or localhost. Open the app over https:// or on localhost.`, true);
+  return false;
+}
+
 async function joinVoice(channel: Channel): Promise<void> {
   if (voicePeer || voiceChannelId) {
     toast('Already connected to a voice channel.', true);
     return;
   }
+  if (!requireSecureContext('Microphone capture')) return;
   if (!navigator.mediaDevices?.getUserMedia) {
     toast('Microphone capture is not supported in this browser.', true);
     return;
@@ -438,6 +445,7 @@ async function toggleScreenShare(): Promise<void> {
 
 async function startScreenShare(): Promise<void> {
   if (!voicePeer || displayStream) return;
+  if (!requireSecureContext('Screen sharing')) return;
   if (!navigator.mediaDevices?.getDisplayMedia) {
     toast('Screen sharing is not supported in this browser.', true);
     return;

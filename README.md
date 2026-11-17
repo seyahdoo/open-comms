@@ -50,6 +50,41 @@ This starts MongoDB and the server on port `8080`, plus UDP port `3478` for WebR
 
 For **any browser voice session**, including one on the same machine, set `MEDIA_ADVERTISE_ADDR` to a non-loopback IP that the client can reach (for example, your LAN IP `192.168.x.x:3478` or a public IP). Browsers ignore `127.0.0.1` ICE candidates, so the default will connect signaling but never establish media. On Windows Docker, use the host LAN IP, not `127.0.0.1` or the Docker gateway address. Browser WebRTC also requires a secure context (`https://` or `localhost`); use a TLS reverse proxy for remote deployments.
 
+### Browser capture requires HTTPS
+
+Browsers only expose `getUserMedia` (microphone) and `getDisplayMedia` (screen/window) in a **secure context**. `http://localhost:8080` and the Tauri shell's `http://tauri.localhost/` are secure contexts. Plain HTTP on a LAN IP or public hostname (for example, `http://192.168.1.10:8080`) is not, so capture APIs are missing and voice/screen sharing cannot start. The client now reports this explicitly instead of claiming the browser is unsupported.
+
+For browsers on other devices, put the server behind an HTTPS reverse proxy using a trusted certificate. The web client automatically switches WebSocket to `wss://` when the page is loaded over `https://`; no client rebuild is needed when proxying the same origin.
+
+Example Caddyfile (Caddy on the same host as the published port):
+
+```caddyfile
+chat.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Example nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name chat.example.com;
+    ssl_certificate     /etc/letsencrypt/live/chat.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/chat.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+```
+
+If the proxy runs in Docker alongside the server, point it at `http://server:8080` instead of `127.0.0.1:8080`. The proxy only carries HTTP/WebSocket; WebRTC media still uses UDP `3478`, so keep that port reachable and `MEDIA_ADVERTISE_ADDR` set to a client-reachable address.
+
 ## Windows local testing app
 `apps/desktop` is a small Tauri WebView2 shell around the existing web client. It does not duplicate any UI code: the Rust shell embeds `apps/web/dist` and the shared web code targets `http://localhost:8080` for HTTP/WebSocket when running inside Tauri.
 
