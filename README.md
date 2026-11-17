@@ -33,7 +33,7 @@ Initial implementation in progress:
    cargo run -p open-comms-server
    ```
    Health check: `GET http://localhost:8080/health`
-   Voice uses UDP `3478` by default; allow it through your local firewall. The default `MEDIA_ADVERTISE_ADDR=127.0.0.1:3478` only works from the same machine.
+   Voice uses UDP `3478` by default; allow it through your local firewall. Browsers ignore loopback ICE candidates, so set `MEDIA_ADVERTISE_ADDR` to a non-loopback IP clients can reach before joining voice (see below).
 
 For a production-style local build:
 ```bash
@@ -48,7 +48,7 @@ docker compose up --build
 ```
 This starts MongoDB and the server on port `8080`, plus UDP port `3478` for WebRTC media. The server image builds `apps/web` and serves it at `http://localhost:8080`.
 
-For voice to work from another machine, set `MEDIA_ADVERTISE_ADDR` to an address resolvable by clients (for example, your LAN IP or public IP). `127.0.0.1:3478` is only suitable for local testing. Browser WebRTC also requires a secure context (`https://` or `localhost`); use a TLS reverse proxy for remote deployments.
+For **any browser voice session**, including one on the same machine, set `MEDIA_ADVERTISE_ADDR` to a non-loopback IP that the client can reach (for example, your LAN IP `192.168.x.x:3478` or a public IP). Browsers ignore `127.0.0.1` ICE candidates, so the default will connect signaling but never establish media. On Windows Docker, use the host LAN IP, not `127.0.0.1` or the Docker gateway address. Browser WebRTC also requires a secure context (`https://` or `localhost`); use a TLS reverse proxy for remote deployments.
 
 ## Windows local testing app
 `apps/desktop` is a small Tauri WebView2 shell around the existing web client. It does not duplicate any UI code: the Rust shell embeds `apps/web/dist` and the shared web code targets `http://localhost:8080` for HTTP/WebSocket when running inside Tauri.
@@ -59,7 +59,7 @@ Prerequisites on Windows:
 - Rust with the MSVC toolchain (`rustup default stable-x86_64-pc-windows-msvc`)
 - Node.js and npm
 
-1. Start the server (for example, `docker compose up --build`) and leave it running.
+1. Set `MEDIA_ADVERTISE_ADDR` to your non-loopback LAN IP (for example, `$env:MEDIA_ADVERTISE_ADDR='192.168.1.10:3478'` in PowerShell), then start the server (for example, `docker compose up --build`) and leave it running. This is required for voice even when the Tauri app is on the same machine.
 2. Open a terminal in `apps/desktop` and install the Tauri CLI:
    ```powershell
    npm install

@@ -14,7 +14,7 @@ use str0m::{
     Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcError,
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 pub type ParticipantId = Uuid;
@@ -155,6 +155,12 @@ impl MediaEngineHandle {
 pub fn start(config: &MediaConfig) -> anyhow::Result<MediaEngineHandle> {
     let socket = UdpSocket::bind(config.bind_addr)?;
     let advertise_addr = config.advertise_addr;
+    if advertise_addr.ip().is_loopback() || advertise_addr.ip().is_unspecified() {
+        warn!(
+            "MEDIA_ADVERTISE_ADDR={} is loopback/unspecified; browsers will ignore this ICE candidate. Set it to a client-reachable IP.",
+            advertise_addr
+        );
+    }
     let (tx, rx) = mpsc::channel(64);
 
     std::thread::Builder::new()
@@ -533,6 +539,7 @@ impl Client {
             Output::Timeout(timeout) => Propagated::Timeout(timeout),
             Output::Event(event) => match event {
                 Event::IceConnectionStateChange(state) => {
+                    info!("client {} ICE state: {:?}", self.id, state);
                     if state == IceConnectionState::Disconnected {
                         self.rtc.disconnect();
                     }

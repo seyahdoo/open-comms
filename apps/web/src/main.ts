@@ -285,11 +285,17 @@ function updateVoiceUi(): void {
   qs('#messageList').classList.toggle('hidden', !!selectedVoice);
 
   if (inVoice) {
-    const voiceChannel = channels.find((channel) => channel.id === voiceChannelId);
-    setVoiceStatus(`Connected to ${voiceChannel?.name ?? 'voice'}`);
+    setVoiceStatus(voiceConnectionLabel());
   } else if (selectedVoice) {
     setVoiceStatus('Ready to join');
   }
+}
+
+function voiceConnectionLabel(): string {
+  const name = channels.find((channel) => channel.id === voiceChannelId)?.name ?? 'voice';
+  return voicePeer?.connectionState === 'connected'
+    ? `Connected to ${name}`
+    : `Connecting to ${name}...`;
 }
 
 function setVoiceStatus(text: string): void {
@@ -337,12 +343,15 @@ async function joinVoice(channel: Channel): Promise<void> {
     };
     peer.onconnectionstatechange = () => {
       if (voicePeer !== peer) return;
-      if (peer.connectionState === 'connected') {
-        setVoiceStatus(`Connected to ${channel.name}`);
-      } else if (peer.connectionState === 'failed' || peer.connectionState === 'closed') {
+      if (peer.connectionState === 'failed' || peer.connectionState === 'closed') {
         toast('Voice connection lost.', true);
         disconnectVoice();
+        return;
       }
+      updateVoiceUi();
+    };
+    peer.oniceconnectionstatechange = () => {
+      if (voicePeer === peer) updateVoiceUi();
     };
 
     const offer = await peer.createOffer();
