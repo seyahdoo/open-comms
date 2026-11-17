@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod handlers;
 mod hub;
+mod media;
 mod routes_auth;
 mod ws;
 
@@ -36,8 +37,14 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    str0m::crypto::from_feature_flags().install_process_default();
+
     let config = Config::from_env()?;
-    let state = db::init_state(&config).await?;
+    let media = media::start(&media::MediaConfig {
+        bind_addr: config.media_bind_addr,
+        advertise_addr: config.media_advertise_addr,
+    })?;
+    let state = db::init_state(&config, media).await?;
 
     let web_dist = PathBuf::from(&config.web_dist_dir);
     let index_file = web_dist.join("index.html");

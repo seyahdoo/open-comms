@@ -1,4 +1,4 @@
-import type { WsServerEvent } from './types';
+import type { WsClientEvent, WsServerEvent } from './types';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
@@ -8,6 +8,7 @@ interface WsHandlers {
 }
 
 export interface WsConnection {
+  send(event: WsClientEvent): boolean;
   close(): void;
   isConnected(): boolean;
 }
@@ -50,6 +51,11 @@ export function createWsConnection(token: string, handlers: WsHandlers): WsConne
   connect();
 
   return {
+    send(event) {
+      if (socket?.readyState !== WebSocket.OPEN) return false;
+      socket.send(JSON.stringify(event));
+      return true;
+    },
     close() {
       stopped = true;
       if (reconnectTimer !== undefined) {

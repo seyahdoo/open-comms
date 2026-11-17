@@ -1,13 +1,17 @@
-use crate::{config::Config, hub::Hub};
+use crate::{config::Config, hub::Hub, media::MediaEngineHandle};
 use mongodb::{bson::doc, options::IndexOptions, Client, Database, IndexModel};
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Database,
     pub hub: Hub,
+    pub media: MediaEngineHandle,
 }
 
-pub async fn init_state(config: &Config) -> anyhow::Result<AppState> {
+pub async fn init_state(
+    config: &Config,
+    media: MediaEngineHandle,
+) -> anyhow::Result<AppState> {
     let client = Client::with_uri_str(&config.mongodb_uri).await?;
     let db = client.database(&config.mongodb_database);
     // Touch the server to fail fast when configuration is invalid.
@@ -16,6 +20,7 @@ pub async fn init_state(config: &Config) -> anyhow::Result<AppState> {
     Ok(AppState {
         db,
         hub: Hub::new(256),
+        media,
     })
 }
 

@@ -18,8 +18,11 @@ services:
       MONGODB_DATABASE: open_comms
       RUST_LOG: info,open_comms_server=debug
       WEB_DIST_DIR: /app/web
+      MEDIA_BIND_ADDR: 0.0.0.0:3478
+      MEDIA_ADVERTISE_ADDR: ${MEDIA_ADVERTISE_ADDR:-127.0.0.1:3478}
     ports:
       - "8080:8080"
+      - "3478:3478/udp"
     depends_on:
       - mongo
 

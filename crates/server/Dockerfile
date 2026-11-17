@@ -24,4 +24,5 @@ COPY --from=web-builder /app/dist /app/web
 ENV APP_BIND_ADDR=0.0.0.0:8080
 ENV WEB_DIST_DIR=/app/web
 EXPOSE 8080
+EXPOSE 3478/udp
 CMD ["open-comms-server"]

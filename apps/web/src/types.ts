@@ -70,4 +70,17 @@ export type WsServerEvent =
         message_id: string;
         reactions: Reaction[];
       };
-    };
+    }
+  | { type: 'voice_joined'; payload: { channel_id: string } }
+  | { type: 'voice_left'; payload: { channel_id: string } }
+  | { type: 'rtc_offer'; payload: { sdp: unknown } }
+  | { type: 'rtc_answer'; payload: { sdp: unknown } }
+  | { type: 'ice_candidate'; payload: { candidate: unknown } }
+  | { type: 'voice_error'; payload: { message: string } };
+
+export type WsClientEvent =
+  | { type: 'ping' }
+  | { type: 'join_voice'; payload: { channel_id: string; sdp: unknown } }
+  | { type: 'rtc_answer'; payload: { sdp: unknown } }
+  | { type: 'ice_candidate'; payload: { candidate: unknown } }
+  | { type: 'leave_voice'; payload: { channel_id: string } };

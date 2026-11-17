@@ -32,6 +32,7 @@ Initial implementation in progress:
    cargo run -p open-comms-server
    ```
    Health check: `GET http://localhost:8080/health`
+   Voice uses UDP `3478` by default; allow it through your local firewall. The default `MEDIA_ADVERTISE_ADDR=127.0.0.1:3478` only works from the same machine.
 
 For a production-style local build:
 ```bash
@@ -44,7 +45,9 @@ The server serves `apps/web/dist` by default. Override with `WEB_DIST_DIR`.
 ```bash
 docker compose up --build
 ```
-This starts MongoDB and the server on port `8080`. The server image builds `apps/web` and serves it at `http://localhost:8080`.
+This starts MongoDB and the server on port `8080`, plus UDP port `3478` for WebRTC media. The server image builds `apps/web` and serves it at `http://localhost:8080`.
+
+For voice to work from another machine, set `MEDIA_ADVERTISE_ADDR` to an address resolvable by clients (for example, your LAN IP or public IP). `127.0.0.1:3478` is only suitable for local testing. Browser WebRTC also requires a secure context (`https://` or `localhost`); use a TLS reverse proxy for remote deployments.
 
 ## API (current baseline)
 ### Auth / identity
@@ -64,8 +67,8 @@ Identity is **permissive for now**:
 
 ### WebSocket
 - `GET /ws?token=<session_token>` (token optional)
-- Client events: `ping`, `send_message`, `reply_message`, `add_reaction`
-- Server events: `pong`, `channel_created`, `message_created`, `reply_created`, `reaction_updated`, `error`
+- Client events: `ping`, `send_message`, `reply_message`, `add_reaction`, `join_voice`, `rtc_answer`, `ice_candidate`, `leave_voice`
+- Server events: `pong`, `channel_created`, `message_created`, `reply_created`, `reaction_updated`, `voice_joined`, `voice_left`, `rtc_offer`, `rtc_answer`, `ice_candidate`, `voice_error`, `error`
 
 ## Web client capabilities
 - Sign in with username (session token stored in `localStorage`)
@@ -73,12 +76,12 @@ Identity is **permissive for now**:
 - Text messages with realtime updates
 - Collapsible replies stored inside the parent message; replies can be replied to recursively
 - Emoji reactions with toggle behavior
+- Voice channels with server-relayed WebRTC audio, mute toggle, and per-participant remote audio playback
 - Responsive layout for desktop and mobile browsers
 
 ## Next implementation steps
-- WebRTC signaling and server relay for voice, then screen/window/audio sharing tracks
+- Add screen/window/audio sharing tracks using `getDisplayMedia` where supported
 - Refine WS semantics (per-channel subscriptions, request/ack correlation)
 - Cursor-based history pagination and embedded-reply size/depth limits
-- Web client voice UI using `getUserMedia` and browser `RTCPeerConnection`
-- Sharing UI using `getDisplayMedia` where supported
-- TLS/WSS deployment hardening, validation/rate limiting, and expanded tests/CI
+- Harden media deployment (TURN for restrictive NATs, TLS/WSS reverse proxy, port range guidance)
+- Validation/rate limiting and expanded tests/CI

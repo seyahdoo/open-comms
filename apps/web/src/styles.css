@@ -223,9 +223,37 @@ textarea {
 }
 
 .channel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
   padding: 0.85rem 1.1rem;
   border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   background: rgba(15, 23, 42, 0.35);
+}
+
+.voice-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.voice-stage {
+  min-height: 3.5rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.75rem 1.1rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(2, 6, 23, 0.5);
+}
+
+.voice-stage audio {
+  width: 12rem;
+  height: 2.25rem;
 }
 
 .message-list {

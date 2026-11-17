@@ -18,6 +18,12 @@ let messages: Message[] = [];
 let socketConnection: WsConnection | null = null;
 const expandedReplies = new Set<string>();
 
+let voicePeer: RTCPeerConnection | null = null;
+let voiceStream: MediaStream | null = null;
+let voiceChannelId: string | null = null;
+let voiceMuted = false;
+const remoteAudios = new Set<HTMLAudioElement>();
+
 function qs<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Missing element: ${selector}`);
@@ -72,7 +78,14 @@ function renderShell(): void {
         <main class="chat">
           <div class="channel-header">
             <strong id="channelTitle">Select a channel</strong>
+            <div id="voiceControls" class="voice-controls hidden">
+              <button id="joinVoiceBtn" class="button primary small" type="button">Join voice</button>
+              <button id="leaveVoiceBtn" class="button small hidden" type="button">Leave</button>
+              <button id="muteVoiceBtn" class="button small hidden" type="button">Mute</button>
+              <span id="voiceStatus" class="muted"></span>
+            </div>
           </div>
+          <div id="voiceStage" class="voice-stage hidden"></div>
           <div id="messageList" class="message-list"></div>
           <form id="messageForm" class="message-form">
             <textarea id="messageInput" rows="1" placeholder="Write a message..."></textarea>
@@ -110,6 +123,11 @@ function bindEvents(): void {
   });
 
   qs<HTMLButtonElement>('#logoutBtn').addEventListener('click', handleLogout);
+  qs<HTMLButtonElement>('#joinVoiceBtn').addEventListener('click', () => {
+    if (selectedChannel) void joinVoice(selectedChannel);
+  });
+  qs<HTMLButtonElement>('#leaveVoiceBtn').addEventListener('click', leaveVoice);
+  qs<HTMLButtonElement>('#muteVoiceBtn').addEventListener('click', toggleMute);
 }
 
 async function handleLogin(): Promise<void> {
@@ -145,6 +163,7 @@ async function restoreSession(sessionToken: string): Promise<void> {
 
 async function startSession(sessionToken: string): Promise<void> {
   token = sessionToken;
+  disconnectVoice();
   showApp();
   qs<HTMLSpanElement>('#userLabel').textContent = currentUser?.username ?? '';
 
@@ -158,6 +177,7 @@ async function startSession(sessionToken: string): Promise<void> {
 }
 
 function handleLogout(): void {
+  disconnectVoice();
   socketConnection?.close();
   socketConnection = null;
   setToken(null);
@@ -183,6 +203,7 @@ function setStatus(status: ConnectionStatus): void {
   const badge = qs<HTMLSpanElement>('#statusBadge');
   badge.textContent = status;
   badge.className = `status status-${status}`;
+  if (status === 'disconnected') disconnectVoice();
 }
 
 async function loadChannels(): Promise<void> {
@@ -223,18 +244,185 @@ async function selectChannel(channel: Channel): Promise<void> {
 
   const isText = channel.channel_type === 'text';
   qs<HTMLFormElement>('#messageForm').classList.toggle('hidden', !isText);
+  updateVoiceUi();
 
   if (!isText) {
     messages = [];
-    const list = qs<HTMLDivElement>('#messageList');
-    list.replaceChildren();
-    list.appendChild(createEmpty('Voice channels will use WebRTC when implemented.'));
+    qs<HTMLDivElement>('#messageList').replaceChildren();
     return;
   }
 
   try {
     messages = await api.listMessages(channel.id);
     renderMessages();
+  } catch (err) {
+    toast(errorMessage(err), true);
+  }
+}
+
+function updateVoiceUi(): void {
+  const selectedVoice = selectedChannel?.channel_type === 'voice';
+  const inVoice = voiceChannelId !== null;
+  qs('#voiceControls').classList.toggle('hidden', !selectedVoice && !inVoice);
+  qs('#joinVoiceBtn').classList.toggle('hidden', !selectedVoice || inVoice);
+  qs('#leaveVoiceBtn').classList.toggle('hidden', !inVoice);
+  qs('#muteVoiceBtn').classList.toggle('hidden', !inVoice);
+  qs('#muteVoiceBtn').textContent = voiceMuted ? 'Unmute' : 'Mute';
+  qs('#voiceStage').classList.toggle('hidden', !inVoice);
+  qs('#messageList').classList.toggle('hidden', !!selectedVoice);
+
+  if (inVoice) {
+    const voiceChannel = channels.find((channel) => channel.id === voiceChannelId);
+    setVoiceStatus(`Connected to ${voiceChannel?.name ?? 'voice'}`);
+  } else if (selectedVoice) {
+    setVoiceStatus('Ready to join');
+  }
+}
+
+function setVoiceStatus(text: string): void {
+  qs<HTMLSpanElement>('#voiceStatus').textContent = text;
+}
+
+async function joinVoice(channel: Channel): Promise<void> {
+  if (voicePeer || voiceChannelId) {
+    toast('Already connected to a voice channel.', true);
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    toast('Microphone capture is not supported in this browser.', true);
+    return;
+  }
+  if (!socketConnection?.isConnected()) {
+    toast('Realtime connection is not ready.', true);
+    return;
+  }
+
+  setVoiceStatus('Requesting microphone...');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    const peer = new RTCPeerConnection({ iceServers: [] });
+
+    voiceStream = stream;
+    voicePeer = peer;
+    voiceChannelId = channel.id;
+    voiceMuted = false;
+    for (const track of stream.getTracks()) peer.addTrack(track, stream);
+
+    peer.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      socketConnection?.send({
+        type: 'ice_candidate',
+        payload: { candidate: event.candidate.toJSON() },
+      });
+    };
+    peer.ontrack = (event) => {
+      attachRemoteAudio(event.streams[0] ?? new MediaStream([event.track]));
+    };
+    peer.onconnectionstatechange = () => {
+      if (voicePeer !== peer) return;
+      if (peer.connectionState === 'connected') {
+        setVoiceStatus(`Connected to ${channel.name}`);
+      } else if (peer.connectionState === 'failed' || peer.connectionState === 'closed') {
+        toast('Voice connection lost.', true);
+        disconnectVoice();
+      }
+    };
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    if (!peer.localDescription) throw new Error('Failed to create WebRTC offer');
+    const sent = socketConnection.send({
+      type: 'join_voice',
+      payload: { channel_id: channel.id, sdp: peer.localDescription.toJSON() },
+    });
+    if (!sent) throw new Error('Realtime connection lost');
+
+    setVoiceStatus('Connecting...');
+    updateVoiceUi();
+  } catch (err) {
+    disconnectVoice();
+    toast(errorMessage(err), true);
+  }
+}
+
+function leaveVoice(): void {
+  if (!voiceChannelId) return;
+  socketConnection?.send({
+    type: 'leave_voice',
+    payload: { channel_id: voiceChannelId },
+  });
+  disconnectVoice();
+}
+
+function disconnectVoice(): void {
+  voicePeer?.close();
+  voicePeer = null;
+  voiceStream?.getTracks().forEach((track) => track.stop());
+  voiceStream = null;
+  voiceChannelId = null;
+  voiceMuted = false;
+  for (const audio of remoteAudios) {
+    audio.srcObject = null;
+    audio.remove();
+  }
+  remoteAudios.clear();
+  qs('#voiceStage').replaceChildren();
+  updateVoiceUi();
+}
+
+function toggleMute(): void {
+  if (!voiceStream) return;
+  voiceMuted = !voiceMuted;
+  for (const track of voiceStream.getAudioTracks()) track.enabled = !voiceMuted;
+  updateVoiceUi();
+}
+
+function attachRemoteAudio(stream: MediaStream): void {
+  const audio = document.createElement('audio');
+  audio.autoplay = true;
+  audio.setAttribute('playsinline', '');
+  audio.srcObject = stream;
+  const remove = () => {
+    remoteAudios.delete(audio);
+    audio.remove();
+  };
+  for (const track of stream.getTracks()) track.addEventListener('ended', remove);
+  remoteAudios.add(audio);
+  qs('#voiceStage').appendChild(audio);
+  void audio.play().catch(() => {
+    setVoiceStatus('Tap the page to allow audio playback');
+  });
+}
+
+async function handleRtcAnswer(sdp: unknown): Promise<void> {
+  if (!voicePeer) return;
+  try {
+    await voicePeer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
+  } catch (err) {
+    toast(errorMessage(err), true);
+  }
+}
+
+async function handleRtcOffer(sdp: unknown): Promise<void> {
+  if (!voicePeer || !socketConnection) return;
+  try {
+    await voicePeer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
+    const answer = await voicePeer.createAnswer();
+    await voicePeer.setLocalDescription(answer);
+    if (!voicePeer.localDescription) return;
+    socketConnection.send({
+      type: 'rtc_answer',
+      payload: { sdp: voicePeer.localDescription.toJSON() },
+    });
+  } catch (err) {
+    toast(errorMessage(err), true);
+  }
+}
+
+async function handleRemoteIce(candidate: unknown): Promise<void> {
+  if (!voicePeer || candidate == null) return;
+  try {
+    await voicePeer.addIceCandidate(candidate as RTCIceCandidateInit);
   } catch (err) {
     toast(errorMessage(err), true);
   }
@@ -308,6 +496,23 @@ function handleWsEvent(event: WsServerEvent): void {
       renderMessages();
       break;
     }
+    case 'voice_joined':
+      if (voiceChannelId === event.payload.channel_id) updateVoiceUi();
+      break;
+    case 'voice_left':
+      break;
+    case 'rtc_answer':
+      void handleRtcAnswer(event.payload.sdp);
+      break;
+    case 'rtc_offer':
+      void handleRtcOffer(event.payload.sdp);
+      break;
+    case 'ice_candidate':
+      void handleRemoteIce(event.payload.candidate);
+      break;
+    case 'voice_error':
+      toast(event.payload.message, true);
+      break;
     case 'error':
       toast(event.payload.message, true);
       break;

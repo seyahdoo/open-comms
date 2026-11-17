@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub type UserId = Uuid;
@@ -107,6 +108,19 @@ pub enum WsClientEvent {
         user_id: Option<UserId>,
         emoji: String,
     },
+    JoinVoice {
+        channel_id: ChannelId,
+        sdp: Value,
+    },
+    RtcAnswer {
+        sdp: Value,
+    },
+    IceCandidate {
+        candidate: Value,
+    },
+    LeaveVoice {
+        channel_id: ChannelId,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +132,12 @@ pub enum WsServerEvent {
     MessageCreated(Message),
     ReplyCreated { channel_id: ChannelId, root_message_id: MessageId, reply: MessageReply },
     ReactionUpdated { channel_id: ChannelId, message_id: MessageId, reactions: Vec<Reaction> },
+    VoiceJoined { channel_id: ChannelId },
+    VoiceLeft { channel_id: ChannelId },
+    RtcOffer { sdp: Value },
+    RtcAnswer { sdp: Value },
+    IceCandidate { candidate: Value },
+    VoiceError { message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
