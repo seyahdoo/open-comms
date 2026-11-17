@@ -47,6 +47,11 @@ pub enum MediaCommand {
         sdp: Value,
         response: oneshot::Sender<Result<(), String>>,
     },
+    Offer {
+        participant_id: ParticipantId,
+        sdp: Value,
+        response: oneshot::Sender<Result<(), String>>,
+    },
     Ice {
         participant_id: ParticipantId,
         candidate: Value,
@@ -92,6 +97,19 @@ impl MediaEngineHandle {
         let (response_tx, response_rx) = oneshot::channel();
         self.tx
             .send(MediaCommand::Answer {
+                participant_id,
+                sdp,
+                response: response_tx,
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        response_rx.await.map_err(|e| e.to_string())?
+    }
+
+    pub async fn offer(&self, participant_id: ParticipantId, sdp: Value) -> Result<(), String> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.tx
+            .send(MediaCommand::Offer {
                 participant_id,
                 sdp,
                 response: response_tx,
@@ -258,6 +276,22 @@ fn handle_command(
                     .find(|client| client.id == participant_id)
                     .ok_or("participant not found")?;
                 client.handle_answer(answer);
+                Ok(())
+            })();
+            let _ = response.send(result);
+        }
+        MediaCommand::Offer {
+            participant_id,
+            sdp,
+            response,
+        } => {
+            let result = (|| -> Result<(), String> {
+                let offer: SdpOffer = serde_json::from_value(sdp).map_err(|e| e.to_string())?;
+                let client = clients
+                    .iter_mut()
+                    .find(|client| client.id == participant_id)
+                    .ok_or("participant not found")?;
+                client.handle_offer(offer);
                 Ok(())
             })();
             let _ = response.send(result);
@@ -674,6 +708,34 @@ impl Client {
         let _ = self.signal_tx.send(MediaSignal::Offer(json));
         self.pending = Some(pending);
         true
+    }
+
+    fn handle_offer(&mut self, offer: SdpOffer) {
+        let answer = match self.rtc.sdp_api().accept_offer(offer) {
+            Ok(answer) => answer,
+            Err(err) => {
+                warn!("client {} offer rejected: {err:?}", self.id);
+                let _ = self
+                    .signal_tx
+                    .send(MediaSignal::Error("failed to accept offer".into()));
+                return;
+            }
+        };
+
+        // An incoming offer invalidates any local pending offer; those track
+        // changes will be recreated after this negotiation completes.
+        self.pending = None;
+        for track in &mut self.tracks_out {
+            match track.state {
+                TrackOutState::Negotiating(_) => track.state = TrackOutState::ToOpen,
+                TrackOutState::NegotiatingStop(mid) => track.state = TrackOutState::ToStop(mid),
+                _ => {}
+            }
+        }
+
+        if let Ok(json) = serde_json::to_value(&answer) {
+            let _ = self.signal_tx.send(MediaSignal::Answer(json));
+        }
     }
 
     fn handle_answer(&mut self, answer: SdpAnswer) {

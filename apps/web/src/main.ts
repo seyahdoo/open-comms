@@ -22,7 +22,10 @@ let voicePeer: RTCPeerConnection | null = null;
 let voiceStream: MediaStream | null = null;
 let voiceChannelId: string | null = null;
 let voiceMuted = false;
-const remoteAudios = new Set<HTMLAudioElement>();
+let voiceMakingOffer = false;
+let displayStream: MediaStream | null = null;
+let localPreview: HTMLVideoElement | null = null;
+const remoteMedia = new Map<string, HTMLMediaElement>();
 
 function qs<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -82,6 +85,10 @@ function renderShell(): void {
               <button id="joinVoiceBtn" class="button primary small" type="button">Join voice</button>
               <button id="leaveVoiceBtn" class="button small hidden" type="button">Leave</button>
               <button id="muteVoiceBtn" class="button small hidden" type="button">Mute</button>
+              <button id="shareScreenBtn" class="button small hidden" type="button">Share screen</button>
+              <label id="shareAudioLabel" class="share-audio hidden">
+                <input id="shareAudioInput" type="checkbox" checked /> Include audio
+              </label>
               <span id="voiceStatus" class="muted"></span>
             </div>
           </div>
@@ -128,6 +135,9 @@ function bindEvents(): void {
   });
   qs<HTMLButtonElement>('#leaveVoiceBtn').addEventListener('click', leaveVoice);
   qs<HTMLButtonElement>('#muteVoiceBtn').addEventListener('click', toggleMute);
+  qs<HTMLButtonElement>('#shareScreenBtn').addEventListener('click', () => {
+    void toggleScreenShare();
+  });
 }
 
 async function handleLogin(): Promise<void> {
@@ -268,6 +278,9 @@ function updateVoiceUi(): void {
   qs('#leaveVoiceBtn').classList.toggle('hidden', !inVoice);
   qs('#muteVoiceBtn').classList.toggle('hidden', !inVoice);
   qs('#muteVoiceBtn').textContent = voiceMuted ? 'Unmute' : 'Mute';
+  qs('#shareScreenBtn').classList.toggle('hidden', !inVoice);
+  qs('#shareScreenBtn').textContent = displayStream ? 'Stop sharing' : 'Share screen';
+  qs('#shareAudioLabel').classList.toggle('hidden', !inVoice || !!displayStream);
   qs('#voiceStage').classList.toggle('hidden', !inVoice);
   qs('#messageList').classList.toggle('hidden', !!selectedVoice);
 
@@ -306,6 +319,7 @@ async function joinVoice(channel: Channel): Promise<void> {
     voicePeer = peer;
     voiceChannelId = channel.id;
     voiceMuted = false;
+    voiceMakingOffer = false;
     for (const track of stream.getTracks()) peer.addTrack(track, stream);
 
     peer.onicecandidate = (event) => {
@@ -315,8 +329,9 @@ async function joinVoice(channel: Channel): Promise<void> {
         payload: { candidate: event.candidate.toJSON() },
       });
     };
+    peer.onnegotiationneeded = () => void negotiateVoice();
     peer.ontrack = (event) => {
-      attachRemoteAudio(event.streams[0] ?? new MediaStream([event.track]));
+      attachRemoteMedia(event.streams[0] ?? new MediaStream([event.track]));
     };
     peer.onconnectionstatechange = () => {
       if (voicePeer !== peer) return;
@@ -345,6 +360,26 @@ async function joinVoice(channel: Channel): Promise<void> {
   }
 }
 
+async function negotiateVoice(): Promise<void> {
+  const peer = voicePeer;
+  if (!peer || peer.signalingState !== 'stable' || voiceMakingOffer) return;
+
+  voiceMakingOffer = true;
+  try {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    if (!peer.localDescription) return;
+    socketConnection?.send({
+      type: 'rtc_offer',
+      payload: { sdp: peer.localDescription.toJSON() },
+    });
+  } catch (err) {
+    toast(errorMessage(err), true);
+  } finally {
+    voiceMakingOffer = false;
+  }
+}
+
 function leaveVoice(): void {
   if (!voiceChannelId) return;
   socketConnection?.send({
@@ -355,17 +390,20 @@ function leaveVoice(): void {
 }
 
 function disconnectVoice(): void {
+  clearDisplayShare(false);
+  localPreview = null;
   voicePeer?.close();
   voicePeer = null;
   voiceStream?.getTracks().forEach((track) => track.stop());
   voiceStream = null;
   voiceChannelId = null;
   voiceMuted = false;
-  for (const audio of remoteAudios) {
-    audio.srcObject = null;
-    audio.remove();
+  voiceMakingOffer = false;
+  for (const element of remoteMedia.values()) {
+    element.srcObject = null;
+    element.remove();
   }
-  remoteAudios.clear();
+  remoteMedia.clear();
   qs('#voiceStage').replaceChildren();
   updateVoiceUi();
 }
@@ -377,42 +415,136 @@ function toggleMute(): void {
   updateVoiceUi();
 }
 
-function attachRemoteAudio(stream: MediaStream): void {
-  const audio = document.createElement('audio');
-  audio.autoplay = true;
-  audio.setAttribute('playsinline', '');
-  audio.srcObject = stream;
+async function toggleScreenShare(): Promise<void> {
+  if (displayStream) {
+    stopScreenShare();
+    return;
+  }
+  await startScreenShare();
+}
+
+async function startScreenShare(): Promise<void> {
+  if (!voicePeer || displayStream) return;
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    toast('Screen sharing is not supported in this browser.', true);
+    return;
+  }
+
+  const includeAudio = qs<HTMLInputElement>('#shareAudioInput').checked;
+  let stream: MediaStream;
+  try {
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: includeAudio });
+    } catch (err) {
+      if (!includeAudio) throw err;
+      // Some browsers do not support audio capture here; retry video-only.
+      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    }
+  } catch (err) {
+    toast(errorMessage(err), true);
+    return;
+  }
+
+  displayStream = stream;
+  for (const track of stream.getTracks()) {
+    voicePeer.addTrack(track, stream);
+    track.addEventListener('ended', () => {
+      if (displayStream === stream) stopScreenShare();
+    });
+  }
+  showLocalPreview(stream);
+  updateVoiceUi();
+}
+
+function stopScreenShare(): void {
+  if (!voicePeer || !displayStream) return;
+  const stream = displayStream;
+  displayStream = null;
+
+  for (const track of stream.getTracks()) {
+    const sender = voicePeer.getSenders().find((item) => item.track === track);
+    if (sender) voicePeer.removeTrack(sender);
+    track.stop();
+  }
+  clearDisplayShare(true);
+  updateVoiceUi();
+}
+
+function clearDisplayShare(removePreview: boolean): void {
+  if (displayStream) {
+    for (const track of displayStream.getTracks()) track.stop();
+    displayStream = null;
+  }
+  if (removePreview) {
+    localPreview?.remove();
+    localPreview = null;
+  }
+}
+
+function showLocalPreview(stream: MediaStream): void {
+  localPreview?.remove();
+  const preview = document.createElement('video');
+  preview.className = 'local-share-preview';
+  preview.autoplay = true;
+  preview.muted = true;
+  preview.setAttribute('playsinline', '');
+  preview.srcObject = stream;
+  qs('#voiceStage').appendChild(preview);
+  localPreview = preview;
+}
+
+function attachRemoteMedia(stream: MediaStream): void {
+  const existing = remoteMedia.get(stream.id);
+  if (existing) return;
+
+  const hasVideo = stream.getVideoTracks().length > 0;
+  const element: HTMLMediaElement = hasVideo
+    ? document.createElement('video')
+    : document.createElement('audio');
+  element.autoplay = true;
+  element.setAttribute('playsinline', '');
+  element.srcObject = stream;
+  if (hasVideo) {
+    (element as HTMLVideoElement).className = 'remote-video';
+  }
+
   const remove = () => {
-    remoteAudios.delete(audio);
-    audio.remove();
+    remoteMedia.delete(stream.id);
+    element.remove();
   };
   for (const track of stream.getTracks()) track.addEventListener('ended', remove);
-  remoteAudios.add(audio);
-  qs('#voiceStage').appendChild(audio);
-  void audio.play().catch(() => {
-    setVoiceStatus('Tap the page to allow audio playback');
+  remoteMedia.set(stream.id, element);
+  qs('#voiceStage').appendChild(element);
+  void element.play().catch(() => {
+    setVoiceStatus('Tap the page to allow media playback');
   });
 }
 
 async function handleRtcAnswer(sdp: unknown): Promise<void> {
-  if (!voicePeer) return;
+  const peer = voicePeer;
+  if (!peer || peer.signalingState !== 'have-local-offer') return;
   try {
-    await voicePeer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
+    await peer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
   } catch (err) {
     toast(errorMessage(err), true);
   }
 }
 
 async function handleRtcOffer(sdp: unknown): Promise<void> {
-  if (!voicePeer || !socketConnection) return;
+  const peer = voicePeer;
+  if (!peer || !socketConnection) return;
   try {
-    await voicePeer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
-    const answer = await voicePeer.createAnswer();
-    await voicePeer.setLocalDescription(answer);
-    if (!voicePeer.localDescription) return;
+    if (voiceMakingOffer || peer.signalingState !== 'stable') {
+      // Browser is the polite peer: roll back our offer and accept the server's.
+      await peer.setLocalDescription({ type: 'rollback' });
+    }
+    await peer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    if (!peer.localDescription) return;
     socketConnection.send({
       type: 'rtc_answer',
-      payload: { sdp: voicePeer.localDescription.toJSON() },
+      payload: { sdp: peer.localDescription.toJSON() },
     });
   } catch (err) {
     toast(errorMessage(err), true);

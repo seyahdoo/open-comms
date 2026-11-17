@@ -1,3 +1,4 @@
+import { wsUrl } from './config';
 import type { WsClientEvent, WsServerEvent } from './types';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
@@ -22,9 +23,7 @@ export function createWsConnection(token: string, handlers: WsHandlers): WsConne
     if (stopped) return;
 
     handlers.onStatus('connecting');
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
-    socket = new WebSocket(url);
+    socket = new WebSocket(wsUrl(token));
 
     socket.onopen = () => handlers.onStatus('connected');
 

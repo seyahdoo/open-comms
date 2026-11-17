@@ -115,6 +115,9 @@ pub enum WsClientEvent {
     RtcAnswer {
         sdp: Value,
     },
+    RtcOffer {
+        sdp: Value,
+    },
     IceCandidate {
         candidate: Value,
     },

@@ -256,6 +256,27 @@ textarea {
   height: 2.25rem;
 }
 
+.voice-stage .remote-video,
+.voice-stage .local-share-preview {
+  width: min(18rem, 45vw);
+  max-height: 12rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 0.6rem;
+  background: #020617;
+}
+
+.voice-stage .local-share-preview {
+  opacity: 0.85;
+}
+
+.share-audio {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: #cbd5e1;
+  font-size: 0.8rem;
+}
+
 .message-list {
   min-height: 0;
   overflow-y: auto;

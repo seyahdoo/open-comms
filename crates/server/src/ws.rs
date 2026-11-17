@@ -177,6 +177,11 @@ async fn handle_text(
                 .await
                 .map_err(|message| WsServerEvent::VoiceError { message })
         }
+        WsClientEvent::RtcOffer { sdp } => state
+            .media
+            .offer(participant_id, sdp)
+            .await
+            .map_err(|message| WsServerEvent::VoiceError { message }),
         WsClientEvent::IceCandidate { candidate } => state
             .media
             .ice(participant_id, candidate)

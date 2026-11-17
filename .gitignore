@@ -1,4 +1,5 @@
 /target
+**/target/
 **/*.rs.bk
 .DS_Store
 .env
@@ -10,3 +11,4 @@
 **/node_modules/
 **/dist/
 **/build/
+**/gen/schemas/

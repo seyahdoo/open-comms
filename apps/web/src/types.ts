@@ -82,5 +82,6 @@ export type WsClientEvent =
   | { type: 'ping' }
   | { type: 'join_voice'; payload: { channel_id: string; sdp: unknown } }
   | { type: 'rtc_answer'; payload: { sdp: unknown } }
+  | { type: 'rtc_offer'; payload: { sdp: unknown } }
   | { type: 'ice_candidate'; payload: { candidate: unknown } }
   | { type: 'leave_voice'; payload: { channel_id: string } };
