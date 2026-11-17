@@ -23,6 +23,9 @@ let voiceStream: MediaStream | null = null;
 let voiceChannelId: string | null = null;
 let voiceMuted = false;
 let voiceMakingOffer = false;
+let voiceJoinOfferSent = false;
+let voiceOfferGeneration = 0;
+let voiceSignalingChain: Promise<void> = Promise.resolve();
 let displayStream: MediaStream | null = null;
 let localPreview: HTMLVideoElement | null = null;
 const remoteMedia = new Map<string, HTMLMediaElement>();
@@ -308,6 +311,12 @@ function requireSecureContext(feature: string): boolean {
   return false;
 }
 
+// Serialize SDP operations so an answer/offer cannot land between createOffer()
+// and setLocalDescription() and leave the peer in an unexpected state.
+function queueVoiceSignaling(task: () => Promise<void>): void {
+  voiceSignalingChain = voiceSignalingChain.then(task, task).catch(() => {});
+}
+
 async function joinVoice(channel: Channel): Promise<void> {
   if (voicePeer || voiceChannelId) {
     toast('Already connected to a voice channel.', true);
@@ -332,10 +341,10 @@ async function joinVoice(channel: Channel): Promise<void> {
     voicePeer = peer;
     voiceChannelId = channel.id;
     voiceMuted = false;
-    // addTrack() queues negotiationneeded. Hold the offer lock until the initial
-    // join offer is sent so that queued callback cannot start a second offer.
-    voiceMakingOffer = true;
-    for (const track of stream.getTracks()) peer.addTrack(track, stream);
+    voiceMakingOffer = false;
+    voiceJoinOfferSent = false;
+    voiceOfferGeneration += 1;
+    const generation = voiceOfferGeneration;
 
     peer.onicecandidate = (event) => {
       if (!event.candidate) return;
@@ -344,7 +353,7 @@ async function joinVoice(channel: Channel): Promise<void> {
         payload: { candidate: event.candidate.toJSON() },
       });
     };
-    peer.onnegotiationneeded = () => void negotiateVoice();
+    peer.onnegotiationneeded = () => queueVoiceSignaling(() => negotiateVoice(peer, generation));
     peer.ontrack = (event) => {
       attachRemoteMedia(event.streams[0] ?? new MediaStream([event.track]));
     };
@@ -361,42 +370,42 @@ async function joinVoice(channel: Channel): Promise<void> {
       if (voicePeer === peer) updateVoiceUi();
     };
 
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    if (!peer.localDescription) throw new Error('Failed to create WebRTC offer');
-    const sent = socketConnection.send({
-      type: 'join_voice',
-      payload: { channel_id: channel.id, sdp: peer.localDescription.toJSON() },
-    });
-    if (!sent) throw new Error('Realtime connection lost');
+    // addTrack() queues negotiationneeded. That single event creates the join
+    // offer; creating one here as well would race with the queued callback.
+    for (const track of stream.getTracks()) peer.addTrack(track, stream);
 
     setVoiceStatus('Connecting...');
     updateVoiceUi();
   } catch (err) {
     disconnectVoice();
     toast(errorMessage(err), true);
-  } finally {
-    voiceMakingOffer = false;
   }
 }
 
-async function negotiateVoice(): Promise<void> {
-  const peer = voicePeer;
-  if (!peer || peer.signalingState !== 'stable' || voiceMakingOffer) return;
+async function negotiateVoice(peer: RTCPeerConnection, generation: number): Promise<void> {
+  if (!voiceChannelId || voicePeer !== peer || generation !== voiceOfferGeneration) return;
+  if (peer.signalingState !== 'stable' || voiceMakingOffer) return;
 
   voiceMakingOffer = true;
   try {
     const offer = await peer.createOffer();
+    if (voicePeer !== peer || generation !== voiceOfferGeneration) return;
     await peer.setLocalDescription(offer);
-    if (!peer.localDescription) return;
-    socketConnection?.send({
-      type: 'rtc_offer',
-      payload: { sdp: peer.localDescription.toJSON() },
-    });
+    if (voicePeer !== peer || generation !== voiceOfferGeneration || !peer.localDescription) return;
+
+    const sdp = peer.localDescription.toJSON();
+    const sent = voiceJoinOfferSent
+      ? socketConnection?.send({ type: 'rtc_offer', payload: { sdp } })
+      : socketConnection?.send({
+          type: 'join_voice',
+          payload: { channel_id: voiceChannelId, sdp },
+        });
+    if (!sent) throw new Error('Realtime connection lost');
+    voiceJoinOfferSent = true;
   } catch (err) {
     toast(errorMessage(err), true);
   } finally {
-    voiceMakingOffer = false;
+    if (voicePeer === peer && generation === voiceOfferGeneration) voiceMakingOffer = false;
   }
 }
 
@@ -419,6 +428,8 @@ function disconnectVoice(): void {
   voiceChannelId = null;
   voiceMuted = false;
   voiceMakingOffer = false;
+  voiceJoinOfferSent = false;
+  voiceOfferGeneration += 1;
   for (const element of remoteMedia.values()) {
     element.srcObject = null;
     element.remove();
@@ -541,35 +552,48 @@ function attachRemoteMedia(stream: MediaStream): void {
   });
 }
 
-async function handleRtcAnswer(sdp: unknown): Promise<void> {
-  const peer = voicePeer;
-  if (!peer || peer.signalingState !== 'have-local-offer') return;
-  try {
-    await peer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
-  } catch (err) {
-    toast(errorMessage(err), true);
-  }
+function handleRtcAnswer(sdp: unknown): void {
+  queueVoiceSignaling(async () => {
+    const peer = voicePeer;
+    if (!peer || peer.signalingState !== 'have-local-offer') return;
+    try {
+      await peer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
+      if (voicePeer === peer) updateVoiceUi();
+    } catch (err) {
+      toast(errorMessage(err), true);
+    }
+  });
 }
 
-async function handleRtcOffer(sdp: unknown): Promise<void> {
-  const peer = voicePeer;
-  if (!peer || !socketConnection) return;
-  try {
-    if (voiceMakingOffer || peer.signalingState !== 'stable') {
-      // Browser is the polite peer: roll back our offer and accept the server's.
-      await peer.setLocalDescription({ type: 'rollback' });
+function handleRtcOffer(sdp: unknown): void {
+  queueVoiceSignaling(async () => {
+    const peer = voicePeer;
+    const description = sdp as RTCSessionDescriptionInit;
+    if (!peer || !socketConnection || description.type !== 'offer') return;
+
+    // Accept the server's offer and invalidate any local offer still in flight.
+    voiceOfferGeneration += 1;
+    voiceMakingOffer = false;
+    try {
+      // Rollback is only legal when a local offer is actually pending. Chrome
+      // throws "wrong signalingState: stable" if it is called from stable.
+      if (peer.signalingState !== 'stable') {
+        await peer.setLocalDescription({ type: 'rollback' });
+      }
+      if (voicePeer !== peer) return;
+      await peer.setRemoteDescription(description);
+      const answer = await peer.createAnswer();
+      if (voicePeer !== peer) return;
+      await peer.setLocalDescription(answer);
+      if (!peer.localDescription) return;
+      socketConnection.send({
+        type: 'rtc_answer',
+        payload: { sdp: peer.localDescription.toJSON() },
+      });
+    } catch (err) {
+      toast(errorMessage(err), true);
     }
-    await peer.setRemoteDescription(sdp as RTCSessionDescriptionInit);
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-    if (!peer.localDescription) return;
-    socketConnection.send({
-      type: 'rtc_answer',
-      payload: { sdp: peer.localDescription.toJSON() },
-    });
-  } catch (err) {
-    toast(errorMessage(err), true);
-  }
+  });
 }
 
 async function handleRemoteIce(candidate: unknown): Promise<void> {
