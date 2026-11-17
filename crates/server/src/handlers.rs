@@ -1,4 +1,4 @@
-use crate::{auth::MaybeUser, authz, db::AppState};
+use crate::{auth::MaybeUser, authz, bson_util::uuid_bson, db::AppState};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -11,7 +11,7 @@ use common::{
 };
 use futures_util::TryStreamExt;
 use mongodb::{
-    bson::{doc, to_bson, Bson},
+    bson::doc,
     options::FindOptions,
     Collection,
 };
@@ -147,7 +147,7 @@ pub async fn list_messages_core(
             .build(),
     };
     let cursor = messages(state)
-        .find(doc! { "channel_id": uuid_bson(channel_id)? })
+        .find(doc! { "channel_id": uuid_bson(channel_id) })
         .with_options(opts)
         .await
         .map_err(internal_err)?;
@@ -289,7 +289,7 @@ pub fn ensure_allowed(user_id: Option<UserId>, action: authz::Action) -> Result<
 
 async fn channel_exists(state: &AppState, channel_id: ChannelId) -> Result<bool, (StatusCode, String)> {
     let found = channels(state)
-        .find_one(doc! { "id": uuid_bson(channel_id)? })
+        .find_one(doc! { "id": uuid_bson(channel_id) })
         .await
         .map_err(internal_err)?;
     Ok(found.is_some())
@@ -301,7 +301,7 @@ async fn find_root_for_message(
     message_id: MessageId,
 ) -> Result<Option<Message>, (StatusCode, String)> {
     let cursor = messages(state)
-        .find(doc! { "channel_id": uuid_bson(channel_id)? })
+        .find(doc! { "channel_id": uuid_bson(channel_id) })
         .await
         .map_err(internal_err)?;
     let roots: Vec<Message> = cursor.try_collect().await.map_err(internal_err)?;
@@ -312,7 +312,7 @@ async fn find_root_for_message(
 
 async fn replace_root(state: &AppState, root: &Message) -> Result<(), (StatusCode, String)> {
     messages(state)
-        .replace_one(doc! { "id": uuid_bson(root.id)? }, root)
+        .replace_one(doc! { "id": uuid_bson(root.id) }, root)
         .await
         .map_err(internal_err)?;
     Ok(())
@@ -371,10 +371,6 @@ fn toggle_reply_reaction(
         }
     }
     None
-}
-
-fn uuid_bson(id: uuid::Uuid) -> Result<Bson, (StatusCode, String)> {
-    to_bson(&id).map_err(internal_err)
 }
 
 fn internal_err<E: std::fmt::Display>(err: E) -> (StatusCode, String) {

@@ -1,4 +1,4 @@
-use crate::db::AppState;
+use crate::{bson_util::uuid_bson, db::AppState};
 use axum::{
     async_trait,
     extract::FromRequestParts,
@@ -77,7 +77,7 @@ pub async fn user_for_token(state: &AppState, token: &str) -> Result<Option<User
     };
 
     let user = users(state)
-        .find_one(doc! { "id": mongodb::bson::to_bson(&session.user_id).map_err(internal_err)? })
+        .find_one(doc! { "id": uuid_bson(session.user_id) })
         .await
         .map_err(internal_err)?;
     Ok(user)

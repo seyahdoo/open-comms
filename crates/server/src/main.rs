@@ -1,5 +1,6 @@
 mod auth;
 mod authz;
+mod bson_util;
 mod config;
 mod db;
 mod handlers;
