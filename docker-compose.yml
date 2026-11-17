@@ -26,5 +26,22 @@ services:
     depends_on:
       - mongo
 
+  # Opt-in dev-only HTTPS reverse proxy with a generated self-signed CA.
+  # Start with: docker compose --profile https up --build
+  https:
+    build:
+      context: ./deploy/dev-https
+    profiles:
+      - https
+    restart: unless-stopped
+    environment:
+      HTTPS_HOSTS: ${HTTPS_HOSTS:-}
+    ports:
+      - "${HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./deploy/dev-https/certs:/etc/nginx/dev-https
+    depends_on:
+      - server
+
 volumes:
   mongo_data:

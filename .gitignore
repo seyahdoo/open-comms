@@ -12,3 +12,5 @@
 **/dist/
 **/build/
 **/gen/schemas/
+/deploy/dev-https/certs/*
+!/deploy/dev-https/certs/.gitkeep
