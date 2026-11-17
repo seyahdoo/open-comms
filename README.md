@@ -1,0 +1,84 @@
+# open-comms
+
+Rust server with a cross-platform TypeScript web client. One web codebase runs in modern browsers on Windows, macOS, Linux, Android and iOS; the server serves the built web app and exposes the API/WebSocket endpoints.
+
+## Current status
+Initial implementation in progress:
+- `crates/common`: shared protocol/domain types (channels, users/sessions, messages with embedded replies, reactions, WS events)
+- `crates/server`: Axum server with HTTP APIs, WebSocket realtime events, MongoDB persistence/indexes, minimal auth/session baseline, and static hosting for the web build
+- `apps/web`: Vite + TypeScript web client (sign-in, channels, messages, collapsible nested replies, emoji reactions, realtime updates)
+- `docker-compose.yml`: server + MongoDB deployment; the server image builds the web client and serves it from `/`
+
+## Decisions captured
+- No guild/workspace support (single-server channel model)
+- Permissions fully permissive for now (authorization hook points added for later)
+- No end-to-end encryption; in-transit encryption (TLS/WSS, WebRTC DTLS-SRTP) for MITM protection
+- WebRTC with server-side relay/SFU behavior for voice/screen/window/audio sharing
+- Web-first client: one TypeScript web app shared across all platforms
+- Mobile targets (Android/iOS) are first-class with best-effort feature parity; browser/OS capture limitations (e.g. iOS screen/system-audio capture) are handled as close to desktop parity as possible
+
+## Run locally
+1. Start MongoDB (or use Docker for mongo only).
+2. Set environment variables (see `.env.example`).
+3. Build the web client:
+   ```bash
+   cd apps/web
+   npm ci
+   npm run dev
+   ```
+   Vite proxies API/WS requests to `http://localhost:8080` during development.
+4. In another terminal, run the server:
+   ```bash
+   cargo run -p open-comms-server
+   ```
+   Health check: `GET http://localhost:8080/health`
+
+For a production-style local build:
+```bash
+cd apps/web && npm ci && npm run build && cd ../..
+cargo run -p open-comms-server
+```
+The server serves `apps/web/dist` by default. Override with `WEB_DIST_DIR`.
+
+## Run with Docker Compose
+```bash
+docker compose up --build
+```
+This starts MongoDB and the server on port `8080`. The server image builds `apps/web` and serves it at `http://localhost:8080`.
+
+## API (current baseline)
+### Auth / identity
+- `POST /auth/register` `{ "username": "alice" }` → `{ "user": {...}, "token": "..." }` (creates user if new, issues session token)
+- `GET /auth/me` with `Authorization: Bearer <token>` → current user or `null`
+
+Identity is **permissive for now**:
+- Authenticated requests use the session user.
+- For compatibility, write actions may still accept `author_id`/`user_id` in the body if no session is provided.
+
+### Channels & text
+- `GET /channels`, `POST /channels` (`{ "name": "general", "channel_type": "text"|"voice" }`)
+- `GET /channels/:channel_id/messages?limit=50`
+- `POST /channels/:channel_id/messages` (`{ "body": "...", "author_id?": "<uuid>" }`)
+- `POST /channels/:channel_id/messages/:parent_id/replies` (`{ "body": "...", "author_id?": "<uuid>" }`) — replies stored inside the root message (nested/repliable)
+- `POST /channels/:channel_id/messages/:message_id/reactions` (`{ "emoji": "👍", "user_id?": "<uuid>" }`) — toggles reaction
+
+### WebSocket
+- `GET /ws?token=<session_token>` (token optional)
+- Client events: `ping`, `send_message`, `reply_message`, `add_reaction`
+- Server events: `pong`, `channel_created`, `message_created`, `reply_created`, `reaction_updated`, `error`
+
+## Web client capabilities
+- Sign in with username (session token stored in `localStorage`)
+- Channel list and channel creation (text/voice)
+- Text messages with realtime updates
+- Collapsible replies stored inside the parent message; replies can be replied to recursively
+- Emoji reactions with toggle behavior
+- Responsive layout for desktop and mobile browsers
+
+## Next implementation steps
+- WebRTC signaling and server relay for voice, then screen/window/audio sharing tracks
+- Refine WS semantics (per-channel subscriptions, request/ack correlation)
+- Cursor-based history pagination and embedded-reply size/depth limits
+- Web client voice UI using `getUserMedia` and browser `RTCPeerConnection`
+- Sharing UI using `getDisplayMedia` where supported
+- TLS/WSS deployment hardening, validation/rate limiting, and expanded tests/CI
